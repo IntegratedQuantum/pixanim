@@ -13,7 +13,7 @@ pub fn build(b: *std.build.Builder) !void {
 
 	const exe = b.addExecutable("pixanim", "src/main.zig");
 	exe.addIncludeDir("include/");
-	exe.addCSourceFile("lib/src/glad.c", &[_][]const u8{"-gdwarf-4",});
+	exe.addCSourceFiles(&[_][]const u8{"lib/src/glad.c", "lib/src/stb_image_write.c"}, &[_][]const u8{"-gdwarf-4",});
 	switch (target.getOsTag()) {
 		.linux => {
 			exe.linkSystemLibrary("GL");

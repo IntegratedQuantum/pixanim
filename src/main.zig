@@ -6,6 +6,7 @@ const graphics = @import("graphics.zig");
 pub const c = @cImport ({
 	@cInclude("glad/glad.h");
 	@cInclude("GLFW/glfw3.h");
+	@cInclude("stb/stb_image_write.h");
 });
 
 const initialKeyCooldown: i128 = 300_000_000;
@@ -15,6 +16,7 @@ pub var width: u31 = 1920;
 pub var height: u31 = 1080;
 const imageWidth: u31 = 192;
 const imageHeight: u31 = 108;
+const outputScale: u31 = 10;
 
 const Color = graphics.Color;
 
@@ -280,6 +282,33 @@ fn getInt(buffer: []u8) u32 {
 	return @intCast(u32, buffer[0]) | @intCast(u32, buffer[1])<<8 | @intCast(u32, buffer[2])<<16 | @intCast(u32, buffer[3])<<24;
 }
 
+fn exportToPNG() !void {
+	try std.fs.cwd().makePath("output");
+	var outputImg: [imageWidth*imageHeight*3*outputScale*outputScale]u8 = undefined;
+	for(animationSequence.items) |image, idx| {
+		var _x: u31 = 0;
+		while(_x < imageWidth) : (_x += 1) {
+			var _y: u31 = 0;
+			while(_y < imageHeight) : (_y += 1) {
+				var dx: u31 = 0;
+				while(dx < outputScale) : (dx += 1) {
+					var dy: u31 = 0;
+					while(dy < outputScale) : (dy += 1) {
+						var color = image.imageData[_x + _y*imageWidth];
+						var i = _x*outputScale + dx + (_y*outputScale + dy)*imageWidth*outputScale;
+						outputImg[3*i] = palette[color].r;
+						outputImg[3*i + 1] = palette[color].g;
+						outputImg[3*i + 2] = palette[color].b;
+					}
+				}
+			}
+		}
+		var buffer: [256]u8 = [_]u8{0} ** 256;
+		_ = c.stbi_write_png((try std.fmt.bufPrint(&buffer, "output/{d:0>4}.png", .{idx})).ptr, imageWidth*outputScale, imageHeight*outputScale, 3, &outputImg, imageWidth*outputScale*3);
+		std.log.info("{s}", .{buffer});
+	}
+}
+
 fn save() !void {
 	const file = try std.fs.cwd().createFile("save.pixanim", .{});
 	var buffer: [256]u8 = undefined;
@@ -313,9 +342,6 @@ fn load() !void {
 
 fn executeCommand(key: c_int) void {
 	switch(key) {
-		c.GLFW_KEY_S => {
-			save() catch unreachable;
-		},
 		c.GLFW_KEY_Z => {
 			if(isKeyPressed(c.GLFW_KEY_LEFT_SHIFT) or isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
 				if(redoBuffer.items.len != 0) {
@@ -474,6 +500,26 @@ fn key_callback(_: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_int, m
 	}
 	if(action == c.GLFW_RELEASE) {
 		keyTable[@intCast(usize, key)] = std.math.maxInt(i128);
+		switch(key) {
+			c.GLFW_KEY_S => {
+				save() catch unreachable;
+			},
+			c.GLFW_KEY_E => {
+				exportToPNG() catch unreachable;
+			},
+			c.GLFW_KEY_DELETE => {
+				if(isKeyPressed(c.GLFW_KEY_LEFT_CONTROL) and isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
+					// Make it hard, but possible to delete the current frame:
+					if(animationSequence.items.len > 1) {
+						_ = animationSequence.orderedRemove(currentImage);
+						currentImage = @intCast(u32, @minimum(currentImage, animationSequence.items.len-1));
+					}
+				}
+			},
+			else => {
+
+			},
+		}
 	}
 }
 
