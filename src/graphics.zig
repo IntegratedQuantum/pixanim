@@ -1,4 +1,5 @@
-const c = @import("main.zig").c;
+const main = @import("main.zig");
+const c = main.c;
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -42,14 +43,14 @@ pub fn init() !void {
 	var vbo: u32 = undefined;
 	c.glGenBuffers(1, &vbo);
 	c.glBindBuffer(c.GL_ARRAY_BUFFER, vbo);
-	c.glBufferData(c.GL_ARRAY_BUFFER, @intCast(c_long, corners.len * @sizeOf(f32)), &corners, c.GL_STATIC_DRAW);
+	c.glBufferData(c.GL_ARRAY_BUFFER, @intCast(corners.len * @sizeOf(f32)), &corners, c.GL_STATIC_DRAW);
 
 	c.glEnableVertexAttribArray(0);
 	c.glVertexAttribPointer(0, 2, c.GL_FLOAT, c.GL_FALSE, @sizeOf(f32)*2, null);
 
 	c.glGenBuffers(1, &vbo);
 	c.glBindBuffer(c.GL_ELEMENT_ARRAY_BUFFER, vbo);
-	c.glBufferData(c.GL_ELEMENT_ARRAY_BUFFER, @intCast(c_long, indices.len * @sizeOf(u32)), &indices, c.GL_STATIC_DRAW);
+	c.glBufferData(c.GL_ELEMENT_ARRAY_BUFFER, @intCast(indices.len * @sizeOf(u32)), &indices, c.GL_STATIC_DRAW);
 
 	c.glBindVertexArray(0);
 
@@ -59,19 +60,19 @@ pub fn init() !void {
 
 pub fn drawRect(x: i32, y: i32, width: i32, height: i32, color: Color) void {
 	rectShader.bind();
-	c.glUniform2f(0, @intToFloat(f32, x), @intToFloat(f32, y));
-	c.glUniform2f(1, @intToFloat(f32, width), @intToFloat(f32, height));
-	c.glUniform2f(2, @intToFloat(f32, @import("main.zig").width), @intToFloat(f32, @import("main.zig").height));
-	c.glUniform3f(3, @intToFloat(f32, color.r)/255.0, @intToFloat(f32, color.g)/255.0, @intToFloat(f32, color.b)/255.0);
+	c.glUniform2f(0, @floatFromInt(x), @floatFromInt(y));
+	c.glUniform2f(1, @floatFromInt(width), @floatFromInt(height));
+	c.glUniform2f(2, @floatFromInt(main.width), @floatFromInt(main.height));
+	c.glUniform3f(3, @as(f32, @floatFromInt(color.r))/255.0, @as(f32, @floatFromInt(color.g))/255.0, @as(f32, @floatFromInt(color.b))/255.0);
 	c.glBindVertexArray(rectVao);
 	c.glDrawElements(c.GL_TRIANGLES, 6, c.GL_UNSIGNED_INT, null);
 }
 
 pub fn drawImage(x: i32, y: i32, width: i32, height: i32) void {
 	imageShader.bind();
-	c.glUniform2f(0, @intToFloat(f32, x), @intToFloat(f32, y));
-	c.glUniform2f(1, @intToFloat(f32, width), @intToFloat(f32, height));
-	c.glUniform2f(2, @intToFloat(f32, @import("main.zig").width), @intToFloat(f32, @import("main.zig").height));
+	c.glUniform2f(0, @floatFromInt(x), @floatFromInt(y));
+	c.glUniform2f(1, @floatFromInt(width), @floatFromInt(height));
+	c.glUniform2f(2, @floatFromInt(main.width), @floatFromInt(main.height));
 	c.glBindVertexArray(rectVao);
 	c.glDrawElements(c.GL_TRIANGLES, 6, c.GL_UNSIGNED_INT, null);
 }
@@ -82,11 +83,11 @@ pub const Shader = struct {
 	fn addShader(self: *const Shader, filename: []const u8, shader_stage: c_uint) !void {
 		var source = try fileToString(std.heap.page_allocator, filename);
 		defer std.heap.page_allocator.free(source);
-		const ref_buffer = [_] [*c]u8 {@ptrCast([*c]u8, source.ptr)};
+		const ref_buffer = [_] [*c]u8 {@ptrCast(source.ptr)};
 		var shader = c.glCreateShader(shader_stage);
 		defer c.glDeleteShader(shader);
 		
-		c.glShaderSource(shader, 1, @ptrCast([*c]const [*c]const u8, &ref_buffer[0]), @ptrCast([*c]const c_int, &source.len));
+		c.glShaderSource(shader, 1, @ptrCast(&ref_buffer[0]), @ptrCast(&source.len));
 		
 		c.glCompileShader(shader);
 
@@ -94,9 +95,9 @@ pub const Shader = struct {
 		c.glGetShaderiv(shader, c.GL_COMPILE_STATUS, &success);
 		if(success != c.GL_TRUE) {
 			var len: u32 = 0;
-			c.glGetShaderiv(shader, c.GL_INFO_LOG_LENGTH, @ptrCast(*c_int, &len));
+			c.glGetShaderiv(shader, c.GL_INFO_LOG_LENGTH, @ptrCast(&len));
 			var buf: [4096] u8 = undefined;
-			c.glGetShaderInfoLog(shader, 4096, @ptrCast(*c_int, &len), &buf);
+			c.glGetShaderInfoLog(shader, 4096, @ptrCast(&len), &buf);
 			std.log.err("Error compiling shader {s}({}):\n{s}\n", .{filename, len, buf[0..len]});
 			return anyerror.Error;
 		}
@@ -111,9 +112,9 @@ pub const Shader = struct {
 		c.glGetProgramiv(self.id, c.GL_LINK_STATUS, &success);
 		if(success != c.GL_TRUE) {
 			var len: u32 = undefined;
-			c.glGetProgramiv(self.id, c.GL_INFO_LOG_LENGTH, @ptrCast(*c_int, &len));
+			c.glGetProgramiv(self.id, c.GL_INFO_LOG_LENGTH, @ptrCast(&len));
 			var buf: [4096] u8 = undefined;
-			c.glGetProgramInfoLog(self.id, 4096, @ptrCast(*c_int, &len), &buf);
+			c.glGetProgramInfoLog(self.id, 4096, @ptrCast(&len), &buf);
 			std.log.err("Error Linking Shader program({}):\n{s}\n", .{len, buf});
 			return anyerror.Error;
 		}

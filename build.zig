@@ -9,10 +9,15 @@ pub fn build(b: *std.build.Builder) !void {
 
 	// Standard release options allow the person running `zig build` to select
 	// between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-	const mode = b.standardReleaseOptions();
+	const optimize = b.standardOptimizeOption(.{});
+	const exe = b.addExecutable(.{
+		.name = "Cubyzig",
+		.root_source_file = .{.path = "src/main.zig"},
+		.target = target,
+		.optimize = optimize,
+	});
 
-	const exe = b.addExecutable("pixanim", "src/main.zig");
-	exe.addIncludeDir("include/");
+	exe.addIncludePath(.{.path = "include"});
 	exe.addCSourceFiles(&[_][]const u8{"lib/src/glad.c", "lib/src/stb_image_write.c"}, &[_][]const u8{"-gdwarf-4",});
 	switch (target.getOsTag()) {
 		.linux => {
@@ -25,11 +30,9 @@ pub fn build(b: *std.build.Builder) !void {
 		}
 	}
 	exe.linkLibC();
-	exe.setTarget(target);
-	exe.setBuildMode(mode);
-	exe.install();
+	b.installArtifact(exe);
 
-	const run_cmd = exe.run();
+	const run_cmd = b.addRunArtifact(exe);
 	run_cmd.step.dependOn(b.getInstallStep());
 	if (b.args) |args| {
 		run_cmd.addArgs(args);
