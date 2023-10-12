@@ -20,8 +20,8 @@ const outputScale: u31 = 10;
 
 const Color = graphics.Color;
 
-const allocator = std.heap.page_allocator;
-var palette: [256]Color = undefined;
+var global_gpa = std.heap.GeneralPurposeAllocator(.{.thread_safe=true}){};
+const allocator: std.mem.Allocator = global_gpa.allocator();
 
 const Image = extern struct {
 	imageData: [imageWidth*imageHeight]u8 = [_]u8{0}**(imageWidth * imageHeight),
@@ -30,9 +30,6 @@ const Image = extern struct {
 var copyBuffer: []u8 = "";
 var copyWidth: u31 = 0;
 var copyHeight: u31 = 0;
-
-var undoBuffer = std.ArrayList(Command).init(allocator);
-var redoBuffer = std.ArrayList(Command).init(allocator);
 
 const CommandType = enum {
 	changePixel,
@@ -44,29 +41,27 @@ const CommandType = enum {
 const ChangePixelCommand = struct {
 	x: u32,
 	y: u32,
-	z: u32,
 	oldColor: u8,
 	newColor: u8,
-	fn do(posX: u31, posY: u31) void {
+	fn do(posX: u31, posY: u31, frame: *AnimationFrame) void {
 		const command = ChangePixelCommand{
 			.x = posX,
 			.y = posY,
-			.z = currentImage,
-			.oldColor = animationSequence.items[currentImage].imageData[@intCast(posX + posY*imageWidth)],
+			.oldColor = frame.image.imageData[@intCast(posX + posY*imageWidth)],
 			.newColor = currentColor
 		};
 		if(command.oldColor == command.newColor) return;
-		command.redo();
+		command.redo(frame);
 	}
-	fn redo(command: ChangePixelCommand) void {
-		animationSequence.items[command.z].imageData[@intCast(command.x + command.y*imageWidth)] = command.newColor;
-		undoBuffer.append(Command{
+	fn redo(command: ChangePixelCommand, frame: *AnimationFrame) void {
+		frame.image.imageData[@intCast(command.x + command.y*imageWidth)] = command.newColor;
+		frame.undoBuffer.append(Command{
 			.changePixel = command
 		}) catch unreachable;
 	}
-	fn undo(command: ChangePixelCommand) void {
-		animationSequence.items[command.z].imageData[@intCast(command.x + command.y*imageWidth)] = command.oldColor;
-		redoBuffer.append(Command{
+	fn undo(command: ChangePixelCommand, frame: *AnimationFrame) void {
+		frame.image.imageData[@intCast(command.x + command.y*imageWidth)] = command.oldColor;
+		frame.redoBuffer.append(Command{
 			.changePixel = command
 		}) catch unreachable;
 	}
@@ -76,29 +71,29 @@ const ChangeColorCommand = struct {
 	idx: u8,
 	oldColor: Color,
 	newColor: Color,
-	fn do(newColor: Color) void {
+	fn do(newColor: Color, frame: *AnimationFrame) void {
 		const command = ChangeColorCommand{
 			.idx = currentColor,
-			.oldColor = palette[currentColor],
+			.oldColor = frame.palette[currentColor],
 			.newColor = newColor
 		};
 		if(std.meta.eql(command.oldColor, command.newColor)) return;
-		command.redo();
+		command.redo(frame);
 	}
-	fn redo(command: ChangeColorCommand) void {
-		palette[command.idx] = command.newColor;
-		if(undoBuffer.items.len != 0 and undoBuffer.items[undoBuffer.items.len - 1] == .changeColor and undoBuffer.items[undoBuffer.items.len - 1].changeColor.idx == command.idx) {
-			undoBuffer.items[undoBuffer.items.len - 1].changeColor.newColor = command.newColor;
+	fn redo(command: ChangeColorCommand, frame: *AnimationFrame) void {
+		frame.palette[command.idx] = command.newColor;
+		if(frame.undoBuffer.items.len != 0 and frame.undoBuffer.items[frame.undoBuffer.items.len - 1] == .changeColor and frame.undoBuffer.items[frame.undoBuffer.items.len - 1].changeColor.idx == command.idx) {
+			frame.undoBuffer.items[frame.undoBuffer.items.len - 1].changeColor.newColor = command.newColor;
 		} else {
-			undoBuffer.append(Command{
+			frame.undoBuffer.append(Command{
 				.changeColor = command
 			}) catch unreachable;
 		}
 	}
-	fn undo(command: ChangeColorCommand) void {
-		std.log.info("{}, {}", .{command.oldColor.r, palette[command.idx].r});
-		palette[command.idx] = command.oldColor;
-		redoBuffer.append(Command{
+	fn undo(command: ChangeColorCommand, frame: *AnimationFrame) void {
+		std.log.info("{}, {}", .{command.oldColor.r, frame.palette[command.idx].r});
+		frame.palette[command.idx] = command.oldColor;
+		frame.redoBuffer.append(Command{
 			.changeColor = command
 		}) catch unreachable;
 	}
@@ -109,16 +104,14 @@ const FillRectCommand = struct {
 	y: u32,
 	width: u32,
 	height: u32,
-	z: u32,
 	oldImage: []u8,
 	newColor: u8,
-	fn do() void {
+	fn do(frame: *AnimationFrame) void {
 		var command = FillRectCommand{
 			.x = @min(selectionStartX.?,  selectedX),
 			.y = @min(selectionStartY.?,  selectedY),
 			.width = @max(selectionStartX.?, selectedX) - @min(selectionStartX.?,  selectedX),
 			.height = @max(selectionStartY.?, selectedY) - @min(selectionStartY.?,  selectedY),
-			.z = currentImage,
 			.oldImage = undefined,
 			.newColor = currentColor
 		};
@@ -127,7 +120,7 @@ const FillRectCommand = struct {
 		outer: while(dx < command.width) : (dx += 1) {
 			var dy: u31 = 0;
 			while(dy < command.height) : (dy += 1) {
-				if(command.newColor != animationSequence.items[command.z].imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)]) {
+				if(command.newColor != frame.image.imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)]) {
 					isRepeat = false;
 					break :outer;
 				}
@@ -135,30 +128,30 @@ const FillRectCommand = struct {
 		}
 		if(isRepeat) return;
 		command.oldImage = allocator.alloc(u8, command.width*command.height) catch unreachable;
-		command.redo();
+		command.redo(frame);
 	}
-	fn redo(command: FillRectCommand) void {
+	fn redo(command: FillRectCommand, frame: *AnimationFrame) void {
 		var dx: u31 = 0;
 		while(dx < command.width) : (dx += 1) {
 			var dy: u31 = 0;
 			while(dy < command.height) : (dy += 1) {
-				command.oldImage[dx + command.width*dy] = animationSequence.items[command.z].imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)];
-				animationSequence.items[command.z].imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)] = command.newColor;
+				command.oldImage[dx + command.width*dy] = frame.image.imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)];
+				frame.image.imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)] = command.newColor;
 			}
 		}
-		undoBuffer.append(Command{
+		frame.undoBuffer.append(Command{
 			.fillRect = command
 		}) catch unreachable;
 	}
-	fn undo(command: FillRectCommand) void {
+	fn undo(command: FillRectCommand, frame: *AnimationFrame) void {
 		var dx: u31 = 0;
 		while(dx < command.width) : (dx += 1) {
 			var dy: u31 = 0;
 			while(dy < command.height) : (dy += 1) {
-				animationSequence.items[command.z].imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)] = command.oldImage[dx + command.width*dy];
+				frame.image.imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)] = command.oldImage[dx + command.width*dy];
 			}
 		}
-		redoBuffer.append(Command{
+		frame.redoBuffer.append(Command{
 			.fillRect = command
 		}) catch unreachable;
 	}
@@ -169,16 +162,14 @@ const PasteCommand = struct {
 	y: u32,
 	width: u32,
 	height: u32,
-	z: u32,
 	oldImage: []u8,
 	newImage: []u8,
-	fn do() void {
+	fn do(frame: *AnimationFrame) void {
 		var command = PasteCommand{
 			.x = selectedX,
 			.y = selectedY,
 			.width = @min(copyWidth, imageWidth - selectedX),
 			.height = @min(copyHeight, imageHeight - selectedY),
-			.z = currentImage,
 			.oldImage = undefined,
 			.newImage = undefined
 		};
@@ -187,7 +178,7 @@ const PasteCommand = struct {
 		outer: while(dx < command.width) : (dx += 1) {
 			var dy: u31 = 0;
 			while(dy < command.height) : (dy += 1) {
-				if(copyBuffer[dx + dy*copyWidth] != animationSequence.items[command.z].imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)]) {
+				if(copyBuffer[dx + dy*copyWidth] != frame.image.imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)]) {
 					isRepeat = false;
 					break :outer;
 				}
@@ -203,31 +194,31 @@ const PasteCommand = struct {
 				command.newImage[dx + dy*command.width] = copyBuffer[dx + dy*copyWidth];
 			}
 		}
-		command.redo();
+		command.redo(frame);
 	}
-	fn redo(command: PasteCommand) void {
+	fn redo(command: PasteCommand, frame: *AnimationFrame) void {
 		var dx: u31 = 0;
 		while(dx < command.width) : (dx += 1) {
 			var dy: u31 = 0;
 			while(dy < command.height) : (dy += 1) {
-				command.oldImage[dx + command.width*dy] = animationSequence.items[command.z].imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)];
-				animationSequence.items[command.z].imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)] = command.newImage[dx + command.width*dy];
+				command.oldImage[dx + command.width*dy] = frame.image.imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)];
+				frame.image.imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)] = command.newImage[dx + command.width*dy];
 			}
 		}
-		undoBuffer.append(Command{
+		frame.undoBuffer.append(Command{
 			.paste = command
 		}) catch unreachable;
 	}
-	fn undo(command: PasteCommand) void {
+	fn undo(command: PasteCommand, frame: *AnimationFrame) void {
 		var dx: u31 = 0;
 		while(dx < command.width) : (dx += 1) {
 			var dy: u31 = 0;
 			while(dy < command.height) : (dy += 1) {
-				command.newImage[dx + command.width*dy] = animationSequence.items[command.z].imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)];
-				animationSequence.items[command.z].imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)] = command.oldImage[dx + command.width*dy];
+				command.newImage[dx + command.width*dy] = frame.image.imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)];
+				frame.image.imageData[@intCast(command.x + dx + (command.y + dy)*imageWidth)] = command.oldImage[dx + command.width*dy];
 			}
 		}
-		redoBuffer.append(Command{
+		frame.redoBuffer.append(Command{
 			.paste = command
 		}) catch unreachable;
 	}
@@ -239,26 +230,47 @@ const Command = union(CommandType) {
 	fillRect: FillRectCommand,
 	paste: PasteCommand,
 
-	fn redo(command: Command) void {
+	fn redo(command: Command, frame: *AnimationFrame) void {
 		switch(command) {
-			.changePixel => command.changePixel.redo(),
-			.changeColor => command.changeColor.redo(),
-			.fillRect => command.fillRect.redo(),
-			.paste => command.paste.redo(),
+			.changePixel => command.changePixel.redo(frame),
+			.changeColor => command.changeColor.redo(frame),
+			.fillRect => command.fillRect.redo(frame),
+			.paste => command.paste.redo(frame),
 		}
 	}
-	fn undo(command: Command) void {
+	fn undo(command: Command, frame: *AnimationFrame) void {
 		switch(command) {
-			.changePixel => command.changePixel.undo(),
-			.changeColor => command.changeColor.undo(),
-			.fillRect => command.fillRect.undo(),
-			.paste => command.paste.undo(),
+			.changePixel => command.changePixel.undo(frame),
+			.changeColor => command.changeColor.undo(frame),
+			.fillRect => command.fillRect.undo(frame),
+			.paste => command.paste.undo(frame),
 		}
 	}
 };
 
-var animationSequence = std.ArrayList(Image).init(allocator);
-var currentImage: u32 = 0;
+const AnimationFrame = struct {
+	image: Image = .{},
+	palette: [256]Color = [_]Color{.{.r = 0, .g = 0, .b = 0}} ** 256,
+	undoBuffer: std.ArrayList(Command) = std.ArrayList(Command).init(allocator),
+	redoBuffer: std.ArrayList(Command) = std.ArrayList(Command).init(allocator),
+
+	pub fn copy(in: *const AnimationFrame) AnimationFrame {
+		return .{
+			.image = in.image,
+			.palette = in.palette,
+			.undoBuffer = in.undoBuffer.clone() catch unreachable,
+			.redoBuffer = in.redoBuffer.clone() catch unreachable,
+		};
+	}
+
+	pub fn deinit(self: *const AnimationFrame) void {
+		self.undoBuffer.deinit();
+		self.redoBuffer.deinit();
+	}
+};
+
+var animationSequence = std.ArrayList(AnimationFrame).init(allocator);
+var currentFrame: u32 = 0;
 var currentColor: u8 = 0;
 var selectedX: u31 = 0;
 var selectedY: u31 = 0;
@@ -285,7 +297,7 @@ fn getInt(buffer: []u8) u32 {
 fn exportToPNG() !void {
 	try std.fs.cwd().makePath("output");
 	var outputImg: [imageWidth*imageHeight*3*outputScale*outputScale]u8 = undefined;
-	for(animationSequence.items, 0..) |image, idx| {
+	for(animationSequence.items, 0..) |frame, idx| {
 		var _x: u31 = 0;
 		while(_x < imageWidth) : (_x += 1) {
 			var _y: u31 = 0;
@@ -294,11 +306,11 @@ fn exportToPNG() !void {
 				while(dx < outputScale) : (dx += 1) {
 					var dy: u31 = 0;
 					while(dy < outputScale) : (dy += 1) {
-						var color = image.imageData[_x + _y*imageWidth];
+						var color = frame.image.imageData[_x + _y*imageWidth];
 						var i = _x*outputScale + dx + (_y*outputScale + dy)*imageWidth*outputScale;
-						outputImg[3*i] = palette[color].r;
-						outputImg[3*i + 1] = palette[color].g;
-						outputImg[3*i + 2] = palette[color].b;
+						outputImg[3*i] = frame.palette[color].r;
+						outputImg[3*i + 1] = frame.palette[color].g;
+						outputImg[3*i + 2] = frame.palette[color].b;
 					}
 				}
 			}
@@ -312,14 +324,14 @@ fn exportToPNG() !void {
 fn save() !void {
 	const file = try std.fs.cwd().createFile("save.pixanim", .{});
 	var buffer: [256]u8 = undefined;
-	for(palette) |color| {
-		try file.writeAll(color.put(buffer[0..]));
-	}
 	try file.writeAll(putInt(imageWidth, buffer[0..]));
 	try file.writeAll(putInt(imageHeight, buffer[0..]));
 	try file.writeAll(putInt(@intCast(animationSequence.items.len), buffer[0..]));
-	for(animationSequence.items) |image| {
-		try file.writeAll(&image.imageData);
+	for(animationSequence.items) |frame| {
+		for(frame.palette) |color| {
+			try file.writeAll(color.put(buffer[0..]));
+		}
+		try file.writeAll(&frame.image.imageData);
 	}
 	file.close();
 }
@@ -329,14 +341,16 @@ fn load() !void {
 	std.log.info("Len{}", .{data.len});
 	defer allocator.free(data);
 	var offset: usize = 0;
-	for(&palette) |*color| {
-		color.* = Color.get(data[offset..offset + 3]);
-		offset += 3;
-	}
 	offset += 12; // Skip the header.
-	while(offset < data.len) : (offset += imageWidth*imageHeight) {
-		var image = animationSequence.addOne() catch unreachable;
-		std.mem.copy(u8, image.imageData[0..], data[offset..offset + imageWidth*imageHeight]);
+	while(offset < data.len) {
+		var frame = animationSequence.addOne() catch unreachable;
+		frame.* = .{};
+		for(&frame.palette) |*color| {
+			color.* = Color.get(data[offset..offset + 3]);
+			offset += 3;
+		}
+		std.mem.copy(u8, frame.image.imageData[0..], data[offset..offset + imageWidth*imageHeight]);
+		offset += imageWidth*imageHeight;
 	}
 }
 
@@ -344,29 +358,29 @@ fn executeCommand(key: c_int) void {
 	switch(key) {
 		c.GLFW_KEY_Z => {
 			if(isKeyPressed(c.GLFW_KEY_LEFT_SHIFT) or isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
-				if(redoBuffer.items.len != 0) {
-					redoBuffer.pop().redo();
+				if(animationSequence.items[currentFrame].redoBuffer.items.len != 0) {
+					animationSequence.items[currentFrame].redoBuffer.pop().redo(&animationSequence.items[currentFrame]);
 				}
 			} else {
-				if(undoBuffer.items.len != 0) {
-					undoBuffer.pop().undo();
+				if(animationSequence.items[currentFrame].undoBuffer.items.len != 0) {
+					animationSequence.items[currentFrame].undoBuffer.pop().undo(&animationSequence.items[currentFrame]);
 				}
 			}
 		},
 		c.GLFW_KEY_A => {
 			if(isKeyPressed(c.GLFW_KEY_LEFT_SHIFT) or isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
-				animationSequence.insert(currentImage, animationSequence.items[currentImage]) catch unreachable;
+				animationSequence.insert(currentFrame, animationSequence.items[currentFrame].copy()) catch unreachable;
 			} else {
-				currentImage -|= 1;
+				currentFrame -|= 1;
 			}
 		},
 		c.GLFW_KEY_D => {
-			currentImage += 1;
+			currentFrame += 1;
 			if(isKeyPressed(c.GLFW_KEY_LEFT_SHIFT) or isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
-				animationSequence.insert(currentImage, animationSequence.items[currentImage-1]) catch unreachable;
+				animationSequence.insert(currentFrame, animationSequence.items[currentFrame-1].copy()) catch unreachable;
 			} else {
-				if(currentImage == animationSequence.items.len) {
-					currentImage -= 1;
+				if(currentFrame == animationSequence.items.len) {
+					currentFrame -= 1;
 				}
 			}
 		},
@@ -401,9 +415,9 @@ fn mouseStuff(window: *c.GLFWwindow) void {
 		}
 		if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_PRESS) {
 			if(isKeyPressed(c.GLFW_KEY_X)) {
-				PasteCommand.do();
+				PasteCommand.do(&animationSequence.items[currentFrame]);
 			} else {
-				FillRectCommand.do();
+				FillRectCommand.do(&animationSequence.items[currentFrame]);
 			}
 		}
 		if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_MIDDLE) == c.GLFW_PRESS) {
@@ -417,7 +431,7 @@ fn mouseStuff(window: *c.GLFWwindow) void {
 			while(dx < copyWidth) : (dx += 1) {
 				var dy: u31 = 0;
 				while(dy < copyHeight) : (dy += 1) {
-					copyBuffer[dx + copyWidth*dy] = animationSequence.items[currentImage].imageData[@intCast(copyX + dx + (copyY + dy)*imageWidth)];
+					copyBuffer[dx + copyWidth*dy] = animationSequence.items[currentFrame].image.imageData[@intCast(copyX + dx + (copyY + dy)*imageWidth)];
 				}
 			}
 		}
@@ -426,10 +440,10 @@ fn mouseStuff(window: *c.GLFWwindow) void {
 		selectionStartY = null;
 		if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_PRESS) {
 			if(isKeyPressed(c.GLFW_KEY_X)) {
-				PasteCommand.do();
+				PasteCommand.do(&animationSequence.items[currentFrame]);
 			} else if(mouseX > width - 300) {
 				if(mouseX > width - 278 and mouseX < width - 22) {
-					var color: Color = palette[currentColor];
+					var color: Color = animationSequence.items[currentFrame].palette[currentColor];
 					if(mouseY >= 110 and mouseY < 175) {
 						color.r = @intCast(mouseX - (width - 278));
 					}
@@ -439,15 +453,15 @@ fn mouseStuff(window: *c.GLFWwindow) void {
 					if(mouseY >= 310 and mouseY < 375) {
 						color.b = @intCast(mouseX - (width - 278));
 					}
-					ChangeColorCommand.do(color);
+					ChangeColorCommand.do(color, &animationSequence.items[currentFrame]);
 				}
 			} else {
-				ChangePixelCommand.do(selectedX, selectedY);
-				std.log.info("{}\n", .{undoBuffer.items.len});
+				ChangePixelCommand.do(selectedX, selectedY, &animationSequence.items[currentFrame]);
+				std.log.info("{}\n", .{animationSequence.items[currentFrame].undoBuffer.items.len});
 			}
 		}
 		if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_MIDDLE) == c.GLFW_PRESS) {
-			currentColor = animationSequence.items[currentImage].imageData[@intCast(selectedX + selectedY*imageWidth)];
+			currentColor = animationSequence.items[currentFrame].image.imageData[@intCast(selectedX + selectedY*imageWidth)];
 		}
 	}
 
@@ -511,8 +525,8 @@ fn key_callback(_: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_int, m
 				if(isKeyPressed(c.GLFW_KEY_LEFT_CONTROL) and isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
 					// Make it hard, but possible to delete the current frame:
 					if(animationSequence.items.len > 1) {
-						_ = animationSequence.orderedRemove(currentImage);
-						currentImage = @intCast(@min(currentImage, animationSequence.items.len-1));
+						animationSequence.orderedRemove(currentFrame).deinit();
+						currentFrame = @intCast(@min(currentFrame, animationSequence.items.len-1));
 					}
 				}
 			},
@@ -524,6 +538,15 @@ fn key_callback(_: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_int, m
 }
 
 pub fn main() anyerror!void {
+	defer {
+		for(animationSequence.items) |*frame| {
+			frame.deinit();
+		}
+		animationSequence.deinit();
+		if(global_gpa.deinit() == .leak) {
+			std.log.err("Memory leak", .{});
+		}
+	}
 	var window: *c.GLFWwindow = undefined;
 
 	if(c.glfwInit() == 0) {
@@ -560,7 +583,7 @@ pub fn main() anyerror!void {
 	c.glTexParameteri(c.GL_TEXTURE_1D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
 
 	load() catch {
-		_ = try animationSequence.append(Image{});
+		_ = try animationSequence.append(.{});
 	};
 
 	var lastTime = std.time.nanoTimestamp();
@@ -578,9 +601,9 @@ pub fn main() anyerror!void {
 		mouseStuff(window);
 		c.glViewport(0, 0, @intCast(width), @intCast(height));
 		c.glBindTexture(c.GL_TEXTURE_2D, texture);
-		c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_R8, imageWidth, imageHeight, 0, c.GL_RED, c.GL_UNSIGNED_BYTE, &animationSequence.items[currentImage].imageData);
+		c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_R8, imageWidth, imageHeight, 0, c.GL_RED, c.GL_UNSIGNED_BYTE, &animationSequence.items[currentFrame].image.imageData);
 		c.glBindTexture(c.GL_TEXTURE_1D, paletteTexture);
-		c.glTexImage1D(c.GL_TEXTURE_1D, 0, c.GL_RGB8, 256, 0, c.GL_RGB, c.GL_UNSIGNED_BYTE, &palette);
+		c.glTexImage1D(c.GL_TEXTURE_1D, 0, c.GL_RGB8, 256, 0, c.GL_RGB, c.GL_UNSIGNED_BYTE, &animationSequence.items[currentFrame].palette);
 
 		c.glActiveTexture(c.GL_TEXTURE0);
 		c.glBindTexture(c.GL_TEXTURE_2D, texture);
@@ -600,7 +623,7 @@ pub fn main() anyerror!void {
 			y + height/2 - imageHeight*scale/2 + @as(i32, selectedY)*scale,
 			scale,
 			scale,
-			palette[animationSequence.items[currentImage].imageData[@intCast(selectedX + selectedY*imageWidth)]]
+			animationSequence.items[currentFrame].palette[animationSequence.items[currentFrame].image.imageData[@intCast(selectedX + selectedY*imageWidth)]]
 		);
 		// Draw paste:
 		if(isKeyPressed(c.GLFW_KEY_X)) {
@@ -613,7 +636,7 @@ pub fn main() anyerror!void {
 						y + height/2 - imageHeight*scale/2 + @as(i32, dy + selectedY)*scale,
 						scale,
 						scale,
-						palette[copyBuffer[dx + copyWidth*dy]]
+						animationSequence.items[currentFrame].palette[copyBuffer[dx + copyWidth*dy]]
 					);
 				}
 			}
@@ -621,31 +644,31 @@ pub fn main() anyerror!void {
 		// Draw the palette:
 		graphics.drawRect(0, 0, width, 100, Color{.r=10, .g=10, .b=10});
 		graphics.drawRect(@divFloor(width, 2) - 45, 5, 90, 90, Color{.r=255, .g=255, .b=255});
-		for(palette, 0..) |color, idx| {
+		for(animationSequence.items[currentFrame].palette, 0..) |color, idx| {
 			graphics.drawRect(@as(i32, @intCast(idx))*100 - @as(i32, @intCast(currentColor))*100 + @divFloor(width, 2) - 40, 10, 80, 80, color);
 		}
 		// Draw the color picker:
 		graphics.drawRect(width - 300, 0, 300, height, Color{.r=10, .g=10, .b=10});
 		if(lastMouseX > width - 300) {
-			for(0..palette.len) |idx| {
+			for(animationSequence.items[currentFrame].palette, 0..) |color, idx| {
 				const val: u8 = @intCast(idx);
-				if(palette[currentColor].r == val) {
+				if(color.r == val) {
 					graphics.drawRect(width - 278 + val, 110, 1, 65, Color{.r=255, .g=255, .b=255});
 				} else {
 					graphics.drawRect(width - 278 + val, 110, 1, 40, Color{.r=val, .g=0, .b=0});
-					graphics.drawRect(width - 278 + val, 155, 1, 20, Color{.r=val, .g=palette[currentColor].g, .b=palette[currentColor].b});
+					graphics.drawRect(width - 278 + val, 155, 1, 20, Color{.r=val, .g=color.g, .b=color.b});
 				}
-				if(palette[currentColor].g == val) {
+				if(color.g == val) {
 					graphics.drawRect(width - 278 + val, 210, 1, 65, Color{.r=255, .g=255, .b=255});
 				} else {
 					graphics.drawRect(width - 278 + val, 210, 1, 40, Color{.r=0, .g=val, .b=0});
-					graphics.drawRect(width - 278 + val, 255, 1, 20, Color{.r=palette[currentColor].r, .g=val, .b=palette[currentColor].b});
+					graphics.drawRect(width - 278 + val, 255, 1, 20, Color{.r=color.r, .g=val, .b=color.b});
 				}
-				if(palette[currentColor].b == val) {
+				if(color.b == val) {
 					graphics.drawRect(width - 278 + val, 310, 1, 65, Color{.r=255, .g=255, .b=255});
 				} else {
 					graphics.drawRect(width - 278 + val, 310, 1, 40, Color{.r=0, .g=0, .b=val});
-					graphics.drawRect(width - 278 + val, 355, 1, 20, Color{.r=palette[currentColor].r, .g=palette[currentColor].g, .b=val});
+					graphics.drawRect(width - 278 + val, 355, 1, 20, Color{.r=color.r, .g=color.g, .b=val});
 				}
 			}
 		}
