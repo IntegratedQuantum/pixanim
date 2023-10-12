@@ -3,10 +3,13 @@ const builtin = @import("builtin");
 
 const graphics = @import("graphics.zig");
 
+const font = @import("font.zig");
+
 pub const c = @cImport ({
 	@cInclude("glad/glad.h");
 	@cInclude("GLFW/glfw3.h");
 	@cInclude("stb/stb_image_write.h");
+	@cInclude("stb/stb_image.h");
 });
 
 const initialKeyCooldown: i128 = 300_000_000;
@@ -14,22 +17,37 @@ const consecutiveKeyCooldown: i128 = 50_000_000;
 
 pub var width: u31 = 1920;
 pub var height: u31 = 1080;
-const imageWidth: u31 = 192;
-const imageHeight: u31 = 108;
+pub const imageWidth: u31 = 192;
+pub const imageHeight: u31 = 108;
 const outputScale: u31 = 10;
 
 const Color = graphics.Color;
 
 var global_gpa = std.heap.GeneralPurposeAllocator(.{.thread_safe=true}){};
-const allocator: std.mem.Allocator = global_gpa.allocator();
+pub const allocator: std.mem.Allocator = global_gpa.allocator();
 
 const Image = extern struct {
 	imageData: [imageWidth*imageHeight]u8 = [_]u8{0}**(imageWidth * imageHeight),
+
+	pub fn set(self: *Image, posX: usize, posY: usize, color: u8) void {
+		self.imageData[posX + posY*imageWidth] = color;
+	}
+
+	pub fn get(self: *Image, posX: usize, posY: usize) u8 {
+		return self.imageData[posX + posY*imageWidth];
+	}
 };
 
 var copyBuffer: []u8 = "";
 var copyWidth: u31 = 0;
 var copyHeight: u31 = 0;
+
+const Mode = enum {
+	normal,
+	textInput,
+};
+
+var mode: Mode = .normal;
 
 const CommandType = enum {
 	changePixel,
@@ -248,7 +266,7 @@ const Command = union(CommandType) {
 	}
 };
 
-const AnimationFrame = struct {
+pub const AnimationFrame = struct {
 	image: Image = .{},
 	palette: [256]Color = [_]Color{.{.r = 0, .g = 0, .b = 0}} ** 256,
 	undoBuffer: std.ArrayList(Command) = std.ArrayList(Command).init(allocator),
@@ -355,6 +373,7 @@ fn load() !void {
 }
 
 fn executeCommand(key: c_int) void {
+	if(mode != .normal) return;
 	switch(key) {
 		c.GLFW_KEY_Z => {
 			if(isKeyPressed(c.GLFW_KEY_LEFT_SHIFT) or isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
@@ -408,60 +427,68 @@ fn mouseStuff(window: *c.GLFWwindow) void {
 	if(result >= 0 and result < imageWidth) selectedX = @intCast(result);
 	result = @divFloor(mouseY - (y + height/2 - imageHeight*scale/2), scale);
 	if(result >= 0 and result < imageHeight) selectedY = @intCast(result);
-	if(isKeyPressed(c.GLFW_KEY_LEFT_SHIFT) or isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
-		if(selectionStartX == null) {
-			selectionStartX = selectedX;
-			selectionStartY = selectedY;
-		}
+	if(mouseX > width - 300) {
 		if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_PRESS) {
-			if(isKeyPressed(c.GLFW_KEY_X)) {
-				PasteCommand.do(&animationSequence.items[currentFrame]);
-			} else {
-				FillRectCommand.do(&animationSequence.items[currentFrame]);
+			if(mouseX > width - 278 and mouseX < width - 22) {
+				var color: Color = animationSequence.items[currentFrame].palette[currentColor];
+				if(mouseY >= 110 and mouseY < 175) {
+					color.r = @intCast(mouseX - (width - 278));
+				}
+				if(mouseY >= 210 and mouseY < 275) {
+					color.g = @intCast(mouseX - (width - 278));
+				}
+				if(mouseY >= 310 and mouseY < 375) {
+					color.b = @intCast(mouseX - (width - 278));
+				}
+				ChangeColorCommand.do(color, &animationSequence.items[currentFrame]);
 			}
 		}
-		if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_MIDDLE) == c.GLFW_PRESS) {
-			allocator.free(copyBuffer);
-			var copyX = @min(selectedX, selectionStartX.?);
-			var copyY = @min(selectedY, selectionStartY.?);
-			copyWidth = @max(selectedX, selectionStartX.?) - copyX;
-			copyHeight = @max(selectedY, selectionStartY.?) - copyY;
-			copyBuffer = allocator.alloc(u8, copyWidth*copyHeight) catch unreachable;
-			var dx: u31 = 0;
-			while(dx < copyWidth) : (dx += 1) {
-				var dy: u31 = 0;
-				while(dy < copyHeight) : (dy += 1) {
-					copyBuffer[dx + copyWidth*dy] = animationSequence.items[currentFrame].image.imageData[@intCast(copyX + dx + (copyY + dy)*imageWidth)];
+	} else if(mode == .normal) {
+		if(isKeyPressed(c.GLFW_KEY_LEFT_SHIFT) or isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
+			if(selectionStartX == null) {
+				selectionStartX = selectedX;
+				selectionStartY = selectedY;
+			}
+			if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_PRESS) {
+				if(isKeyPressed(c.GLFW_KEY_X)) {
+					PasteCommand.do(&animationSequence.items[currentFrame]);
+				} else {
+					FillRectCommand.do(&animationSequence.items[currentFrame]);
 				}
 			}
-		}
-	} else {
-		selectionStartX = null;
-		selectionStartY = null;
-		if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_PRESS) {
-			if(isKeyPressed(c.GLFW_KEY_X)) {
-				PasteCommand.do(&animationSequence.items[currentFrame]);
-			} else if(mouseX > width - 300) {
-				if(mouseX > width - 278 and mouseX < width - 22) {
-					var color: Color = animationSequence.items[currentFrame].palette[currentColor];
-					if(mouseY >= 110 and mouseY < 175) {
-						color.r = @intCast(mouseX - (width - 278));
+			if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_MIDDLE) == c.GLFW_PRESS) {
+				allocator.free(copyBuffer);
+				var copyX = @min(selectedX, selectionStartX.?);
+				var copyY = @min(selectedY, selectionStartY.?);
+				copyWidth = @max(selectedX, selectionStartX.?) - copyX;
+				copyHeight = @max(selectedY, selectionStartY.?) - copyY;
+				copyBuffer = allocator.alloc(u8, copyWidth*copyHeight) catch unreachable;
+				var dx: u31 = 0;
+				while(dx < copyWidth) : (dx += 1) {
+					var dy: u31 = 0;
+					while(dy < copyHeight) : (dy += 1) {
+						copyBuffer[dx + copyWidth*dy] = animationSequence.items[currentFrame].image.imageData[@intCast(copyX + dx + (copyY + dy)*imageWidth)];
 					}
-					if(mouseY >= 210 and mouseY < 275) {
-						color.g = @intCast(mouseX - (width - 278));
-					}
-					if(mouseY >= 310 and mouseY < 375) {
-						color.b = @intCast(mouseX - (width - 278));
-					}
-					ChangeColorCommand.do(color, &animationSequence.items[currentFrame]);
 				}
-			} else {
-				ChangePixelCommand.do(selectedX, selectedY, &animationSequence.items[currentFrame]);
-				std.log.info("{}\n", .{animationSequence.items[currentFrame].undoBuffer.items.len});
+			}
+		} else {
+			selectionStartX = null;
+			selectionStartY = null;
+			if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_PRESS) {
+				if(isKeyPressed(c.GLFW_KEY_X)) {
+					PasteCommand.do(&animationSequence.items[currentFrame]);
+				} else {
+					ChangePixelCommand.do(selectedX, selectedY, &animationSequence.items[currentFrame]);
+					std.log.info("{}\n", .{animationSequence.items[currentFrame].undoBuffer.items.len});
+				}
+			}
+			if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_MIDDLE) == c.GLFW_PRESS) {
+				currentColor = animationSequence.items[currentFrame].image.imageData[@intCast(selectedX + selectedY*imageWidth)];
 			}
 		}
-		if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_MIDDLE) == c.GLFW_PRESS) {
-			currentColor = animationSequence.items[currentFrame].image.imageData[@intCast(selectedX + selectedY*imageWidth)];
+	} else if(mode == .textInput) {
+		if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_LEFT) == c.GLFW_PRESS) {
+			font.apply(&animationSequence.items[currentFrame], selectedX, selectedY, currentColor) catch unreachable;
 		}
 	}
 
@@ -507,38 +534,80 @@ fn window_size_callback(_: ?*c.GLFWwindow, newWidth: c_int, newHeight: c_int) ca
 
 fn key_callback(_: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.C) void {
 	std.log.info("{} {} {} {}\n", .{key, scancode, action, mods});
-	if(key == c.GLFW_KEY_UNKNOWN) return;
 	if(action == c.GLFW_PRESS) {
 		keyTable[@intCast(key)] = initialKeyCooldown;
-		executeCommand(key);
 	}
 	if(action == c.GLFW_RELEASE) {
 		keyTable[@intCast(key)] = std.math.maxInt(i128);
-		switch(key) {
-			c.GLFW_KEY_S => {
-				save() catch unreachable;
-			},
-			c.GLFW_KEY_E => {
-				exportToPNG() catch unreachable;
-			},
-			c.GLFW_KEY_DELETE => {
-				if(isKeyPressed(c.GLFW_KEY_LEFT_CONTROL) and isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
-					// Make it hard, but possible to delete the current frame:
-					if(animationSequence.items.len > 1) {
-						animationSequence.orderedRemove(currentFrame).deinit();
-						currentFrame = @intCast(@min(currentFrame, animationSequence.items.len-1));
-					}
-				}
-			},
-			else => {
+	}
+	switch(mode) {
+		.normal => {
+			if(key == c.GLFW_KEY_UNKNOWN) return;
+			if(action == c.GLFW_PRESS) {
+				executeCommand(key);
+			}
+			if(action == c.GLFW_RELEASE) {
+				switch(key) {
+					c.GLFW_KEY_S => {
+						save() catch unreachable;
+					},
+					c.GLFW_KEY_E => {
+						exportToPNG() catch unreachable;
+					},
+					c.GLFW_KEY_DELETE => {
+						if(isKeyPressed(c.GLFW_KEY_LEFT_CONTROL) and isKeyPressed(c.GLFW_KEY_RIGHT_SHIFT)) {
+							// Make it hard, but possible to delete the current frame:
+							if(animationSequence.items.len > 1) {
+								animationSequence.orderedRemove(currentFrame).deinit();
+								currentFrame = @intCast(@min(currentFrame, animationSequence.items.len-1));
+							}
+						}
+					},
+					c.GLFW_KEY_ENTER => {
+						mode = .textInput;
+					},
+					else => {
 
-			},
-		}
+					},
+				}
+			}
+		},
+		.textInput => {
+			if(action == c.GLFW_RELEASE) {
+				if(key == c.GLFW_KEY_ENTER) {
+					mode = .normal;
+					font.apply(&animationSequence.items[currentFrame], selectedX, selectedY, currentColor) catch unreachable;
+					font.clearBuffer();
+				} else if(key == c.GLFW_KEY_ESCAPE) {
+					mode = .normal;
+					font.clearBuffer();
+				}
+			}
+			if(action == c.GLFW_PRESS or action == c.GLFW_REPEAT) {
+				if(key == c.GLFW_KEY_BACKSPACE) {
+					font.deleteChar();
+				}
+			}
+		},
 	}
 }
 
+fn character_callback(_: ?*c.GLFWwindow, codepoint: c_uint) callconv(.C) void {
+	if(mode == .textInput) {
+		if(codepoint > 128) {
+			var buf: [4]u8 = undefined;
+			std.log.err("Unsupported character: {s}", .{buf[0..std.unicode.utf8Encode(@intCast(codepoint), &buf) catch unreachable]});
+			return;
+		}
+		font.addChar(@intCast(codepoint)) catch unreachable;
+	}
+}
+
+
 pub fn main() anyerror!void {
+	try font.init();
 	defer {
+		font.deinit();
 		for(animationSequence.items) |*frame| {
 			frame.deinit();
 		}
@@ -564,6 +633,7 @@ pub fn main() anyerror!void {
 	_ = c.glfwSetWindowSizeCallback(window, window_size_callback);
 	_ = c.glfwSetKeyCallback(window, key_callback);
 	_ = c.glfwSetScrollCallback(window, scroll_callback);
+	_ = c.glfwSetCharCallback(window, character_callback);
 
 	try graphics.init();
 
@@ -626,7 +696,9 @@ pub fn main() anyerror!void {
 			animationSequence.items[currentFrame].palette[animationSequence.items[currentFrame].image.imageData[@intCast(selectedX + selectedY*imageWidth)]]
 		);
 		// Draw paste:
-		if(isKeyPressed(c.GLFW_KEY_X)) {
+		if(mode == .textInput) {
+			font.renderPreview(&animationSequence.items[currentFrame], x, y, selectedX, selectedY, currentColor, scale);
+		} else if(isKeyPressed(c.GLFW_KEY_X)) {
 			var dx: u31 = 0;
 			while(dx < copyWidth and dx + selectedX < imageWidth) : (dx += 1) {
 				var dy: u31 = 0;
@@ -650,7 +722,8 @@ pub fn main() anyerror!void {
 		// Draw the color picker:
 		graphics.drawRect(width - 300, 0, 300, height, Color{.r=10, .g=10, .b=10});
 		if(lastMouseX > width - 300) {
-			for(animationSequence.items[currentFrame].palette, 0..) |color, idx| {
+			const color = animationSequence.items[currentFrame].palette[currentColor];
+			for(0..256) |idx| {
 				const val: u8 = @intCast(idx);
 				if(color.r == val) {
 					graphics.drawRect(width - 278 + val, 110, 1, 65, Color{.r=255, .g=255, .b=255});

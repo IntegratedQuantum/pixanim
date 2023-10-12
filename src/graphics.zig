@@ -132,3 +132,43 @@ pub const Shader = struct {
 		c.glUseProgram(self.id);
 	}
 };
+
+pub const DynamicImage = struct {
+	width: u31,
+	height: u31,
+	imageData: []Color,
+	pub fn init(allocator: Allocator, width: u31, height: u31) !DynamicImage {
+		return .{
+			.width = width,
+			.height = height,
+			.imageData = try allocator.alloc(Color, width*height),
+		};
+	}
+	pub fn deinit(self: DynamicImage, allocator: Allocator) void {
+		allocator.free(self.imageData);
+	}
+	pub fn readFromFile(allocator: Allocator, path: []const u8) !DynamicImage {
+		var result: DynamicImage = undefined;
+		var channel: c_int = undefined;
+		const nullTerminatedPath = try std.fmt.allocPrintZ(main.allocator, "{s}", .{path}); // TODO: Find a more zig-friendly image loading library.
+		defer main.allocator.free(nullTerminatedPath);
+		const data = c.stbi_load(nullTerminatedPath.ptr, @ptrCast(&result.width), @ptrCast(&result.height), &channel, 3) orelse {
+			return error.FileNotFound;
+		};
+		result.imageData = try allocator.dupe(Color, @as([*]Color, @ptrCast(data))[0..result.width*result.height]);
+		c.stbi_image_free(data);
+		return result;
+	}
+	pub fn getRGB(self: DynamicImage, x: usize, y: usize) Color {
+		std.debug.assert(x < self.width);
+		std.debug.assert(y < self.height);
+		const index = x + y*self.width;
+		return self.imageData[index];
+	}
+	pub fn setRGB(self: DynamicImage, x: usize, y: usize, rgb: Color) void {
+		std.debug.assert(x < self.width);
+		std.debug.assert(y < self.height);
+		const index = x + y*self.width;
+		self.imageData[index] = rgb;
+	}
+};

@@ -18,7 +18,7 @@ pub fn build(b: *std.build.Builder) !void {
 	});
 
 	exe.addIncludePath(.{.path = "include"});
-	exe.addCSourceFiles(&[_][]const u8{"lib/src/glad.c", "lib/src/stb_image_write.c"}, &[_][]const u8{"-gdwarf-4",});
+	exe.addCSourceFiles(&[_][]const u8{"lib/src/glad.c", "lib/src/stb_image_write.c", "lib/src/stb_image.c"}, &[_][]const u8{"-g", "-O3"});
 	switch (target.getOsTag()) {
 		.linux => {
 			exe.linkSystemLibrary("GL");
