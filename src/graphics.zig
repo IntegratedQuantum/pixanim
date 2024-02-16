@@ -84,7 +84,7 @@ pub const Shader = struct {
 		var source = try fileToString(std.heap.page_allocator, filename);
 		defer std.heap.page_allocator.free(source);
 		const ref_buffer = [_] [*c]u8 {@ptrCast(source.ptr)};
-		var shader = c.glCreateShader(shader_stage);
+		const shader = c.glCreateShader(shader_stage);
 		defer c.glDeleteShader(shader);
 		
 		c.glShaderSource(shader, 1, @ptrCast(&ref_buffer[0]), @ptrCast(&source.len));

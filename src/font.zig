@@ -132,9 +132,8 @@ pub fn renderPreview(frame: *main.AnimationFrame, x: i32, y: i32, selectedX: i32
 	}
 }
 
-pub fn apply(frame: *main.AnimationFrame, _x: i32, _y: i32, currentColor: u8) !void { // TODO: Add logic to undo this.
+pub fn apply(frame: *main.AnimationFrame, _x: i32, y: i32, currentColor: u8) !void { // TODO: Add logic to undo this.
 	var x: i32 = _x;
-	var y: i32 = _y;
 	for(curString.items) |char| {
 		const glyph = glyphs[char];
 		for(0..glyph.width) |dx| {

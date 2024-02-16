@@ -324,8 +324,8 @@ fn exportToPNG() !void {
 				while(dx < outputScale) : (dx += 1) {
 					var dy: u31 = 0;
 					while(dy < outputScale) : (dy += 1) {
-						var color = frame.image.imageData[_x + _y*imageWidth];
-						var i = _x*outputScale + dx + (_y*outputScale + dy)*imageWidth*outputScale;
+						const color = frame.image.imageData[_x + _y*imageWidth];
+						const i = _x*outputScale + dx + (_y*outputScale + dy)*imageWidth*outputScale;
 						outputImg[3*i] = frame.palette[color].r;
 						outputImg[3*i + 1] = frame.palette[color].g;
 						outputImg[3*i + 2] = frame.palette[color].b;
@@ -367,7 +367,7 @@ fn load() !void {
 			color.* = Color.get(data[offset..offset + 3]);
 			offset += 3;
 		}
-		std.mem.copy(u8, frame.image.imageData[0..], data[offset..offset + imageWidth*imageHeight]);
+		@memcpy(frame.image.imageData[0..], data[offset..offset + imageWidth*imageHeight]);
 		offset += imageWidth*imageHeight;
 	}
 }
@@ -417,8 +417,8 @@ fn mouseStuff(window: *c.GLFWwindow) void {
 	var mouseX_float: f64 = undefined;
 	var mouseY_float: f64 = undefined;
 	c.glfwGetCursorPos(window, &mouseX_float, &mouseY_float);
-	var mouseX: i32 = @intFromFloat(mouseX_float);
-	var mouseY: i32 = @intFromFloat(mouseY_float);
+	const mouseX: i32 = @intFromFloat(mouseX_float);
+	const mouseY: i32 = @intFromFloat(mouseY_float);
 	if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_RIGHT) == c.GLFW_PRESS) {
 		x += mouseX - lastMouseX;
 		y += mouseY - lastMouseY;
@@ -458,8 +458,8 @@ fn mouseStuff(window: *c.GLFWwindow) void {
 			}
 			if(c.glfwGetMouseButton(window, c.GLFW_MOUSE_BUTTON_MIDDLE) == c.GLFW_PRESS) {
 				allocator.free(copyBuffer);
-				var copyX = @min(selectedX, selectionStartX.?);
-				var copyY = @min(selectedY, selectionStartY.?);
+				const copyX = @min(selectedX, selectionStartX.?);
+				const copyY = @min(selectedY, selectionStartY.?);
 				copyWidth = @max(selectedX, selectionStartX.?) - copyX;
 				copyHeight = @max(selectedY, selectionStartY.?) - copyY;
 				copyBuffer = allocator.alloc(u8, copyWidth*copyHeight) catch unreachable;
@@ -659,7 +659,7 @@ pub fn main() anyerror!void {
 	var lastTime = std.time.nanoTimestamp();
 
 	while(c.glfwWindowShouldClose(window) == 0) {
-		var deltaTime = std.time.nanoTimestamp() - lastTime;
+		const deltaTime = std.time.nanoTimestamp() - lastTime;
 		lastTime += deltaTime;
 		const glError = c.glGetError();
 		if(glError != 0) {
